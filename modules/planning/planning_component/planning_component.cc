@@ -38,18 +38,36 @@ using apollo::routing::RoutingResponse;
 using apollo::storytelling::Stories;
 
 bool PlanningComponent::Init() {
+  /*
+  实际上这个类DependencyInjector就是实现了将planning所有涉及到的相关信息（车辆状态，
+  规划历史数据，障碍物历史状态信息等）都集中存放到这个类里。
+  该类没有cc文件，全部在h文件实现。
+  */
   injector_ = std::make_shared<DependencyInjector>();
 
+  /*
+  PlanningBase是NaviPlanning和OnLanePlanning的父类
+  在Apollo的平台上，规划分为三种模式：
+  OnLanePlanning（车道规划，可用于城区及高速公路各种复杂道路）
+  NaviPlanning（导航规划，主要用于高速公路）
+  OpenSpacePlanning （自主泊车和狭窄路段的掉头）
+  包含四种具体规划算法：
+  PublicRoadPlanner（默认规划器）
+  LatticePlanner、NaviPlanner（主要用于高速公路场景）
+  RTKPlanner（循迹算法，一般不用）
+  */
   if (FLAGS_use_navigation_mode) {
     planning_base_ = std::make_unique<NaviPlanning>(injector_);
   } else {
     planning_base_ = std::make_unique<OnLanePlanning>(injector_);
   }
 
+  // 加载config，/planning/planning_component/conf/planning_config.pb.txt
   ACHECK(ComponentBase::GetProtoConfig(&config_))
       << "failed to load planning config file "
       << ComponentBase::ConfigFilePath();
 
+  // 与机器学习相关的？
   if (FLAGS_planning_offline_learning ||
       config_.learning_mode() != PlanningConfig::NO_LEARNING) {
     if (!message_process_.Init(config_, injector_)) {
@@ -58,8 +76,10 @@ bool PlanningComponent::Init() {
     }
   }
 
+  //  确定了规划模式（OnLanePlanning），将配置参数写到planning里，清空Planning状态？
   planning_base_->Init(config_);
 
+  // 初始化要接收的消息，类似ROS的订阅，Callback函数直接写在里面了。
   planning_command_reader_ = node_->CreateReader<PlanningCommand>(
       config_.topic_config().planning_command_topic(),
       [this](const std::shared_ptr<PlanningCommand>& planning_command) {
@@ -93,6 +113,7 @@ bool PlanningComponent::Init() {
         stories_.CopyFrom(*stories);
       });
 
+  // 已弃用，暂不考虑
   if (FLAGS_use_navigation_mode) {
     relative_map_reader_ = node_->CreateReader<MapMsg>(
         config_.topic_config().relative_map_topic(),
@@ -102,6 +123,8 @@ bool PlanningComponent::Init() {
           relative_map_.CopyFrom(*map_message);
         });
   }
+
+  // 初始化要发送的消息，类似ROS的发布
   planning_writer_ = node_->CreateWriter<ADCTrajectory>(
       config_.topic_config().planning_trajectory_topic());
 
@@ -128,6 +151,13 @@ bool PlanningComponent::Proc(
   CheckRerouting();
 
   // process fused input data
+  /*
+  将接收到的消息都存到local_view_里
+  其中planning_command和pad_msg应该是不一定会有？
+  prediction_obstacles,chassis,localization_estimate是触发Proc的，所以必然是最新消息
+  其他消息则不一定是最新的
+  如果没有planning_command，则CheckInput()无法通过
+  */
   local_view_.prediction_obstacles = prediction_obstacles;
   local_view_.chassis = chassis;
   local_view_.localization_estimate = localization_estimate;
@@ -169,6 +199,7 @@ bool PlanningComponent::Proc(
     return false;
   }
 
+  // 机器学习部分先不看
   if (config_.learning_mode() != PlanningConfig::NO_LEARNING) {
     // data process for online training
     message_process_.OnChassis(*local_view_.chassis);
@@ -183,6 +214,7 @@ bool PlanningComponent::Proc(
   }
 
   // publish learning data frame for RL test
+  // 机器学习部分先不看
   if (config_.learning_mode() == PlanningConfig::RL_TEST) {
     PlanningLearningData planning_learning_data;
     LearningDataFrame* learning_data_frame =
