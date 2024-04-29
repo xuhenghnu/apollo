@@ -37,10 +37,13 @@ using apollo::planning::ADCTrajectory;
 
 const double kDoubleEpsilon = 1e-6;
 
+// 监视器注册，控制模块出现ERROR由监视器输出
 ControlComponent::ControlComponent()
     : monitor_logger_buffer_(common::monitor::MonitorMessageItem::CONTROL) {}
 
 bool ControlComponent::Init() {
+  // 定义共享指针，子程序可以使用指针获取车辆状态信息
+  // 如controller_agent_.Init(injector_, &control_conf_)
   injector_ = std::make_shared<DependencyInjector>();
   init_time_ = Clock::Now();
 
@@ -54,6 +57,9 @@ bool ControlComponent::Init() {
         << " is loaded.";
 
   // initial controller agent when not using control submodules
+  // control_task_agent_ 子程序，当前pipline的子程序包含
+  // lat_controller和lon_controller，在目录中应该还有mpc_controller，
+  // 调整文件pipeline.pb.txt可以选择使用哪些控制器
   ADEBUG << "FLAGS_use_control_submodules: " << FLAGS_use_control_submodules;
   if (!FLAGS_use_control_submodules &&
       !control_task_agent_.Init(injector_, control_pipeline_).ok()) {
@@ -63,6 +69,8 @@ bool ControlComponent::Init() {
     return false;
   }
 
+  // 订阅话题
+  // 底盘信息
   cyber::ReaderConfig chassis_reader_config;
   chassis_reader_config.channel_name = FLAGS_chassis_topic;
   chassis_reader_config.pending_queue_size = FLAGS_chassis_pending_queue_size;
@@ -71,6 +79,7 @@ bool ControlComponent::Init() {
       node_->CreateReader<Chassis>(chassis_reader_config, nullptr);
   ACHECK(chassis_reader_ != nullptr);
 
+  // 轨迹信息
   cyber::ReaderConfig planning_reader_config;
   planning_reader_config.channel_name = FLAGS_planning_trajectory_topic;
   planning_reader_config.pending_queue_size = FLAGS_planning_pending_queue_size;
@@ -89,6 +98,7 @@ bool ControlComponent::Init() {
           planning_command_status_reader_config, nullptr);
   ACHECK(planning_command_status_reader_ != nullptr);
 
+  // 定位信息
   cyber::ReaderConfig localization_reader_config;
   localization_reader_config.channel_name = FLAGS_localization_topic;
   localization_reader_config.pending_queue_size =
@@ -98,6 +108,7 @@ bool ControlComponent::Init() {
       localization_reader_config, nullptr);
   ACHECK(localization_reader_ != nullptr);
 
+  // Pad信息，Pad信息包括驾驶模式{人工，自主驾驶等}和驾驶行为{停止，启动，}
   cyber::ReaderConfig pad_msg_reader_config;
   pad_msg_reader_config.channel_name = FLAGS_pad_topic;
   pad_msg_reader_config.pending_queue_size = FLAGS_pad_msg_pending_queue_size;
@@ -106,6 +117,7 @@ bool ControlComponent::Init() {
       node_->CreateReader<PadMessage>(pad_msg_reader_config, nullptr);
   ACHECK(pad_msg_reader_ != nullptr);
 
+  // 发布话题
   if (!FLAGS_use_control_submodules) {
     control_cmd_writer_ =
         node_->CreateWriter<ControlCommand>(FLAGS_control_command_topic);
@@ -132,6 +144,7 @@ bool ControlComponent::Init() {
   return true;
 }
 
+// 保存当前的Pad信息
 void ControlComponent::OnPad(const std::shared_ptr<PadMessage> &pad) {
   std::lock_guard<std::mutex> lock(mutex_);
   pad_msg_.CopyFrom(*pad);
@@ -139,12 +152,14 @@ void ControlComponent::OnPad(const std::shared_ptr<PadMessage> &pad) {
   AERROR_IF(!pad_msg_.has_action()) << "pad message check failed!";
 }
 
+// 保存当前的底盘信息
 void ControlComponent::OnChassis(const std::shared_ptr<Chassis> &chassis) {
   ADEBUG << "Received chassis data: run chassis callback.";
   std::lock_guard<std::mutex> lock(mutex_);
   latest_chassis_.CopyFrom(*chassis);
 }
 
+// 保存当前的规划信息
 void ControlComponent::OnPlanning(
     const std::shared_ptr<ADCTrajectory> &trajectory) {
   ADEBUG << "Received chassis data: run trajectory callback.";
@@ -152,6 +167,7 @@ void ControlComponent::OnPlanning(
   latest_trajectory_.CopyFrom(*trajectory);
 }
 
+// 保存当前的PlanningCommandStatus信息
 void ControlComponent::OnPlanningCommandStatus(
     const std::shared_ptr<external_command::CommandStatus>
         &planning_command_status) {
@@ -161,6 +177,7 @@ void ControlComponent::OnPlanningCommandStatus(
   planning_command_status_.CopyFrom(*planning_command_status);
 }
 
+// 保存当前的定位信息
 void ControlComponent::OnLocalization(
     const std::shared_ptr<LocalizationEstimate> &localization) {
   ADEBUG << "Received control data: run localization message callback.";
@@ -168,6 +185,7 @@ void ControlComponent::OnLocalization(
   latest_localization_.CopyFrom(*localization);
 }
 
+// 保存当前的监视器信息
 void ControlComponent::OnMonitor(
     const common::monitor::MonitorMessage &monitor_message) {
   for (const auto &item : monitor_message.item()) {
@@ -178,6 +196,7 @@ void ControlComponent::OnMonitor(
   }
 }
 
+// 用于计算控制指令
 Status ControlComponent::ProduceControlCommand(
     ControlCommand *control_command) {
   Status status = CheckInput(&local_view_);
@@ -306,9 +325,11 @@ Status ControlComponent::ProduceControlCommand(
   return status;
 }
 
+// 入口函数，10ms执行一次
 bool ControlComponent::Proc() {
   const auto start_time = Clock::Now();
 
+  // 获取底盘信息并保存
   chassis_reader_->Observe();
   const auto &chassis_msg = chassis_reader_->GetLatestObserved();
   if (chassis_msg == nullptr) {
@@ -317,6 +338,7 @@ bool ControlComponent::Proc() {
   }
   OnChassis(chassis_msg);
 
+  // 获取轨迹信息并保存
   trajectory_reader_->Observe();
   const auto &trajectory_msg = trajectory_reader_->GetLatestObserved();
   if (trajectory_msg == nullptr) {
@@ -329,6 +351,7 @@ bool ControlComponent::Proc() {
     }
   }
 
+  // 获取planning_command_status信息并保存
   planning_command_status_reader_->Observe();
   const auto &planning_status_msg =
       planning_command_status_reader_->GetLatestObserved();
@@ -339,6 +362,7 @@ bool ControlComponent::Proc() {
   }
   injector_->Set_planning_command_status(planning_command_status_);
 
+  // 获取定位信息并保存
   localization_reader_->Observe();
   const auto &localization_msg = localization_reader_->GetLatestObserved();
   if (localization_msg == nullptr) {
@@ -347,12 +371,14 @@ bool ControlComponent::Proc() {
   }
   OnLocalization(localization_msg);
 
+  // 获取Pad信息并保存
   pad_msg_reader_->Observe();
   const auto &pad_msg = pad_msg_reader_->GetLatestObserved();
   if (pad_msg != nullptr) {
     OnPad(pad_msg);
   }
 
+  // 把输入信息都存到local_view_?为了安全？
   {
     // TODO(SHU): to avoid redundent copy
     std::lock_guard<std::mutex> lock(mutex_);
@@ -408,9 +434,11 @@ bool ControlComponent::Proc() {
   Status status;
   if (local_view_.chassis().driving_mode() ==
       apollo::canbus::Chassis::COMPLETE_AUTO_DRIVE) {
+    // 自动驾驶状态，需要计算控制输出
     status = ProduceControlCommand(&control_command);
     ADEBUG << "Produce control command normal.";
   } else {
+    // 非自动驾驶状态，控制输出赋值为0，相关信息清空
     ADEBUG << "Into reset control command.";
     ResetAndProduceZeroControlCommand(&control_command);
   }
@@ -477,6 +505,7 @@ bool ControlComponent::Proc() {
   return true;
 }
 
+// 若输入数据没有问题，则更新车辆状态获取器信息
 Status ControlComponent::CheckInput(LocalView *local_view) {
   ADEBUG << "Received localization:"
          << local_view->localization().ShortDebugString();
@@ -500,12 +529,14 @@ Status ControlComponent::CheckInput(LocalView *local_view) {
     }
   }
 
+  // 更新车辆状态，包括时间戳、档位、车速、方向盘百分比、曲率、行驶状态
   injector_->vehicle_state()->Update(local_view->localization(),
                                      local_view->chassis());
 
   return Status::OK();
 }
 
+// 检查数据时间戳是否有问题，监视某一模块是否太久未更新数据
 Status ControlComponent::CheckTimestamp(const LocalView &local_view) {
   if (!FLAGS_enable_input_timestamp_check || FLAGS_is_control_test_mode) {
     ADEBUG << "Skip input timestamp check by gflags.";
@@ -543,6 +574,7 @@ Status ControlComponent::CheckTimestamp(const LocalView &local_view) {
   return Status::OK();
 }
 
+// 控制指令赋值为0并清除相关信息
 void ControlComponent::ResetAndProduceZeroControlCommand(
     ControlCommand *control_command) {
   control_command->set_throttle(0.0);

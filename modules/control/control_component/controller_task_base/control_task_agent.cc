@@ -31,6 +31,7 @@ using apollo::common::Status;
 using apollo::cyber::Clock;
 using apollo::cyber::plugin_manager::PluginManager;
 
+// 控制器初始化，调用相应的控制器类的Init函数
 Status ControlTaskAgent::Init(std::shared_ptr<DependencyInjector> injector,
                               const ControlPipeline &control_pipeline) {
   if (control_pipeline.controller_size() == 0) {
@@ -54,6 +55,7 @@ Status ControlTaskAgent::Init(std::shared_ptr<DependencyInjector> injector,
   return Status::OK();
 }
 
+// 控制器计算控制指令，调用相应的控制器类的ComputeControlCommand函数
 Status ControlTaskAgent::ComputeControlCommand(
     const localization::LocalizationEstimate *localization,
     const canbus::Chassis *chassis, const planning::ADCTrajectory *trajectory,
@@ -72,6 +74,7 @@ Status ControlTaskAgent::ComputeControlCommand(
   return Status::OK();
 }
 
+// 控制器Reset，调用相应的控制器类的Reset函数
 Status ControlTaskAgent::Reset() {
   for (auto &controller : controller_list_) {
     ADEBUG << "controller:" << controller->Name() << " reset...";
