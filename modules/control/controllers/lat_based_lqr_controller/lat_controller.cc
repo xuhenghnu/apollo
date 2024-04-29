@@ -169,6 +169,7 @@ void LatController::LogInitParameters() {
         << " lr_: " << lr_;
 }
 
+// 低通滤波器
 void LatController::InitializeFilters() {
   // Low pass filter
   std::vector<double> den(3, 0.0);
@@ -176,6 +177,8 @@ void LatController::InitializeFilters() {
   common::LpfCoefficients(ts_, lat_based_lqr_controller_conf_.cutoff_freq(),
                           &den, &num);
   digital_filter_.set_coefficients(den, num);
+
+  // 偏差均值滤波，防止突变
   lateral_error_filter_ = common::MeanFilter(static_cast<std::uint_fast8_t>(
       lat_based_lqr_controller_conf_.mean_filter_window_size()));
   heading_error_filter_ = common::MeanFilter(static_cast<std::uint_fast8_t>(
@@ -183,20 +186,26 @@ void LatController::InitializeFilters() {
 }
 
 Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
+  // 获取横向控制的参数，存储在lat_based_lqr_controller_conf_中
   if (!ControlTask::LoadConfig<LatBaseLqrControllerConf>(
           &lat_based_lqr_controller_conf_)) {
     AERROR << "failed to load control conf";
     return Status(ErrorCode::CONTROL_INIT_ERROR,
                   "failed to load lat control_conf");
   }
+  // injector是共享指针，这样可以通过injector_获取需要的信息
   injector_ = injector;
+  // 将部分控制参数拆解开来
   if (!LoadControlConf()) {
     AERROR << "failed to load control conf";
     return Status(ErrorCode::CONTROL_COMPUTE_ERROR,
                   "failed to load control_conf");
   }
   // Matrix init operations.
+  // preview_window_是什么？预估状态，这个好像在MPC里才会用
   const int matrix_size = basic_state_size_ + preview_window_;
+  // matrix_a_:状态转移矩阵，matrix_ad_：离散状态转移矩阵
+  // matrix_adc_: preview_window_=0时，matrix_adc_ = matrix_ad_
   matrix_a_ = Matrix::Zero(basic_state_size_, basic_state_size_);
   matrix_ad_ = Matrix::Zero(basic_state_size_, basic_state_size_);
   matrix_adc_ = Matrix::Zero(matrix_size, matrix_size);
@@ -209,11 +218,13 @@ Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
    0.0, ((lr * cr - lf * cf) / i_z) / v, (l_f * c_f - l_r * c_r) / i_z,
    (-1.0 * (l_f^2 * c_f + l_r^2 * c_r) / i_z) / v;]
   */
+  // 常量项
   matrix_a_(0, 1) = 1.0;
   matrix_a_(1, 2) = (cf_ + cr_) / mass_;
   matrix_a_(2, 3) = 1.0;
   matrix_a_(3, 2) = (lf_ * cf_ - lr_ * cr_) / iz_;
-
+  // 速度相关项(它用的是matrix_size，加了preview_window_)，后面会一起赋值给A
+  // 因为速度相关，所以需要实时更新，所以剥离开来
   matrix_a_coeff_ = Matrix::Zero(matrix_size, matrix_size);
   matrix_a_coeff_(1, 1) = -(cf_ + cr_) / mass_;
   matrix_a_coeff_(1, 3) = (lr_ * cr_ - lf_ * cf_) / mass_;
@@ -223,6 +234,7 @@ Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
   /*
   b = [0.0, c_f / m, 0.0, l_f * c_f / i_z]^T
   */
+  // matrix_b_：控制矩阵 matrix_bd_：离散控制矩阵
   matrix_b_ = Matrix::Zero(basic_state_size_, 1);
   matrix_bd_ = Matrix::Zero(basic_state_size_, 1);
   matrix_bdc_ = Matrix::Zero(matrix_size, 1);
@@ -230,6 +242,8 @@ Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
   matrix_b_(3, 0) = lf_ * cf_ / iz_;
   matrix_bd_ = matrix_b_ * ts_;
 
+  // matrix_state_:状态向量 matrix_k_：全状态反馈系数
+  // matrix_r_:控制权重矩阵 matrix_q_：状态权重矩阵
   matrix_state_ = Matrix::Zero(matrix_size, 1);
   matrix_k_ = Matrix::Zero(1, matrix_size);
   matrix_r_ = Matrix::Identity(1, 1);
@@ -248,15 +262,25 @@ Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
     return Status(ErrorCode::CONTROL_COMPUTE_ERROR, error_msg);
   }
 
+  // 将q参数填到矩阵对角线
   for (int i = 0; i < q_param_size; ++i) {
     matrix_q_(i, i) = lat_based_lqr_controller_conf_.matrix_q(i);
   }
 
+  // Q矩阵也是需要更新的，因为A矩阵速度相关？
   matrix_q_updated_ = matrix_q_;
+  // 初始化滤波器
   InitializeFilters();
+  // LQR控制器误差权重矩阵Q增益赋值。
+  /*
+  速度较低时增益为1；当速度为25m/s时，增益为0.05。
+  避免高速情况下车辆控制模块输出较大转角控制量而导致车辆失稳的情况。
+  对于其他速度，采用线性插值设置ratio数值，如速度为6时，radio值为0.8。
+  */
   LoadLatGainScheduler();
   LogInitParameters();
 
+  // 滞后超前控制器
   enable_leadlag_ =
       lat_based_lqr_controller_conf_.enable_reverse_leadlag_compensation();
   if (enable_leadlag_) {
@@ -264,12 +288,14 @@ Status LatController::Init(std::shared_ptr<DependencyInjector> injector) {
         lat_based_lqr_controller_conf_.reverse_leadlag_conf(), ts_);
   }
 
+  // 模型参考自适应控制
   enable_mrac_ = lat_based_lqr_controller_conf_.enable_steer_mrac_control();
   if (enable_mrac_) {
     mrac_controller_.Init(lat_based_lqr_controller_conf_.steer_mrac_conf(),
                           vehicle_param_.steering_latency_param(), ts_);
   }
 
+  // 预瞄控制控制算法
   enable_look_ahead_back_control_ =
       lat_based_lqr_controller_conf_.enable_look_ahead_back_control();
 
