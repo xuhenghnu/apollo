@@ -89,6 +89,7 @@ LatController::LatController() : name_("LQR-based Lateral Controller") {
 
 LatController::~LatController() { CloseLogFile(); }
 
+// 车辆参数、车辆模型参数和控制器参数载入
 bool LatController::LoadControlConf() {
   vehicle_param_ =
       common::VehicleConfigHelper::Instance()->GetConfig().vehicle_param();
