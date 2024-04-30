@@ -345,6 +345,7 @@ Status LatController::ComputeControlCommand(
   auto previous_lon_debug = injector_->Get_previous_lon_debug_info();
   auto target_tracking_trajectory = *planning_published_trajectory;
 
+  // 这个现在基本不用了
   if (FLAGS_use_navigation_mode &&
       lat_based_lqr_controller_conf_.enable_navigation_mode_position_update()) {
     auto time_stamp_diff =
@@ -410,11 +411,15 @@ Status LatController::ComputeControlCommand(
     }
   }
 
+  // 轨迹分析器初始化，将规划轨迹转换成TrajectoryAnalyzer类
+  // TrajectoryAnalyzer类中包含一些算法比如根据车辆位置匹配最近点、根据相对时间确定路径点等
   trajectory_analyzer_ =
       std::move(TrajectoryAnalyzer(&target_tracking_trajectory));
 
   // Transform the coordinate of the planning trajectory from the center of the
   // rear-axis to the center of mass, if conditions matched
+  // 由于规划模块的参考轨迹均以后轴位置计算，而控制模块计算却要以质心位置做参考
+  // 所以将后轴参考轨迹转换为质心参考轨迹
   if (((lat_based_lqr_controller_conf_.trajectory_transform_to_com_reverse() &&
         vehicle_state->gear() == canbus::Chassis::GEAR_REVERSE) ||
        (lat_based_lqr_controller_conf_.trajectory_transform_to_com_drive() &&
@@ -469,6 +474,7 @@ Status LatController::ComputeControlCommand(
   matrix_b_(3, 0) = lf_ * cf_ / iz_;
   matrix_bd_ = matrix_b_ * ts_;
 
+  // 更新车辆航向角和控制矩阵，如果是倒车，航向角+PI，控制矩阵取反
   UpdateDrivingOrientation();
 
   SimpleLateralDebug *debug = cmd->mutable_debug()->mutable_simple_lat_debug();
@@ -681,6 +687,7 @@ Status LatController::Reset() {
   return Status::OK();
 }
 
+// 状态向量更新
 void LatController::UpdateState(SimpleLateralDebug *debug) {
   auto vehicle_state = injector_->vehicle_state();
   if (FLAGS_use_navigation_mode) {
