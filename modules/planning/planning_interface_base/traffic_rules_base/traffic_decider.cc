@@ -32,6 +32,7 @@ namespace planning {
 using apollo::common::Status;
 
 bool TrafficDecider::Init(const std::shared_ptr<DependencyInjector> &injector) {
+  // 只初始化一次
   if (init_) return true;
   // Load the pipeline config.
   AINFO << "Load config path:" << FLAGS_traffic_rule_config_filename;

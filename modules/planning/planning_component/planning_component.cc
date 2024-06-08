@@ -50,7 +50,6 @@ bool PlanningComponent::Init() {
   在Apollo的平台上，规划分为三种模式：
   OnLanePlanning（车道规划，可用于城区及高速公路各种复杂道路）
   NaviPlanning（导航规划，主要用于高速公路）
-  OpenSpacePlanning （自主泊车和狭窄路段的掉头）
   包含四种具体规划算法：
   PublicRoadPlanner（默认规划器）
   LatticePlanner、NaviPlanner（主要用于高速公路场景）
@@ -80,6 +79,7 @@ bool PlanningComponent::Init() {
   planning_base_->Init(config_);
 
   // 初始化要接收的消息，类似ROS的订阅，Callback函数直接写在里面了。
+  // 输入导航命令
   planning_command_reader_ = node_->CreateReader<PlanningCommand>(
       config_.topic_config().planning_command_topic(),
       [this](const std::shared_ptr<PlanningCommand>& planning_command) {
@@ -88,7 +88,7 @@ bool PlanningComponent::Init() {
         std::lock_guard<std::mutex> lock(mutex_);
         planning_command_.CopyFrom(*planning_command);
       });
-
+  // 交通灯消息
   traffic_light_reader_ = node_->CreateReader<TrafficLightDetection>(
       config_.topic_config().traffic_light_detection_topic(),
       [this](const std::shared_ptr<TrafficLightDetection>& traffic_light) {
@@ -97,6 +97,7 @@ bool PlanningComponent::Init() {
         traffic_light_.CopyFrom(*traffic_light);
       });
 
+  // planning操作命令（start，stop）消息
   pad_msg_reader_ = node_->CreateReader<PadMessage>(
       config_.topic_config().planning_pad_topic(),
       [this](const std::shared_ptr<PadMessage>& pad_msg) {
@@ -105,6 +106,7 @@ bool PlanningComponent::Init() {
         pad_msg_.CopyFrom(*pad_msg);
       });
 
+  // storytelling消息
   story_telling_reader_ = node_->CreateReader<Stories>(
       config_.topic_config().story_telling_topic(),
       [this](const std::shared_ptr<Stories>& stories) {
@@ -115,6 +117,7 @@ bool PlanningComponent::Init() {
 
   // 已弃用，暂不考虑
   if (FLAGS_use_navigation_mode) {
+    // 实时相对地图消息（用于NaviPlanning）
     relative_map_reader_ = node_->CreateReader<MapMsg>(
         config_.topic_config().relative_map_topic(),
         [this](const std::shared_ptr<MapMsg>& map_message) {
@@ -125,15 +128,19 @@ bool PlanningComponent::Init() {
   }
 
   // 初始化要发送的消息，类似ROS的发布
+  // planning输出轨迹消息
   planning_writer_ = node_->CreateWriter<ADCTrajectory>(
       config_.topic_config().planning_trajectory_topic());
 
+  // planning阻塞时需要重新路由的请求
   rerouting_client_ =
       node_->CreateClient<apollo::external_command::LaneFollowCommand,
                           external_command::CommandStatus>(
           config_.topic_config().routing_request_topic());
   planning_learning_data_writer_ = node_->CreateWriter<PlanningLearningData>(
       config_.topic_config().planning_learning_data_topic());
+
+  // planning实时任务状态消息
   command_status_writer_ = node_->CreateWriter<external_command::CommandStatus>(
       FLAGS_planning_command_status);
   return true;

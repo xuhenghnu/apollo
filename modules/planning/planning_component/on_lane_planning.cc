@@ -112,18 +112,18 @@ Status OnLanePlanning::Init(const PlanningConfig& config) {
                   "planning config error: " + config_.DebugString());
   }
 
+  // 保存配置，清理历史信息和规划状态，加载地图
+  // 存下config
   PlanningBase::Init(config_);
-
   // clear planning history
   injector_->history()->Clear();
-
   // clear planning status
   injector_->planning_context()->mutable_planning_status()->Clear();
-
   // load map
   hdmap_ = HDMapUtil::BaseMapPtr();
   ACHECK(hdmap_) << "Failed to load map";
 
+  // 启动参考线生成器的线程
   // instantiate reference line provider
   const ReferenceLineConfig* reference_line_config = nullptr;
   if (config_.has_reference_line_config()) {
@@ -133,6 +133,7 @@ Status OnLanePlanning::Init(const PlanningConfig& config) {
       injector_->vehicle_state(), reference_line_config);
   reference_line_provider_->Start();
 
+  // 选择规划器，默认是apollo::planning::PublicRoadPlanner
   // dispatch planner
   LoadPlanner();
   if (!planner_) {
@@ -152,9 +153,11 @@ Status OnLanePlanning::Init(const PlanningConfig& config) {
     BirdviewImgFeatureRenderer::Instance()->Init(renderer_config);
   }
 
+  // 读取交通规则配置，将交通规则填入列表以待后续使用
   traffic_decider_.Init(injector_);
 
   start_time_ = Clock::NowInSeconds();
+  // 将injector_信息存在planner_里，FLAGS_planner_config_path不存在，且Init里没用到
   return planner_->Init(injector_, FLAGS_planner_config_path);
 }
 
@@ -245,6 +248,10 @@ void OnLanePlanning::RunOnce(const LocalView& local_view,
   // chassis
   ADEBUG << "Get chassis:" << local_view_.chassis->DebugString();
 
+  // local_view可以理解为输入信
+  // injector_是planning模块依赖的输入数据的注入类，将planning所有涉及到的相关信息都集中
+  // 存放到这个类里（车辆状态，规划历史数据，障碍物历史状态信息等）
+  // 车辆状态更新，如果未获取到相关信息或者车辆状态信息不对，则不再往下执行
   Status status = injector_->vehicle_state()->Update(
       *local_view_.localization_estimate, *local_view_.chassis);
 
